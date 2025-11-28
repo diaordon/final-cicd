@@ -1,0 +1,51 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cve-watcher
+spec:
+  schedule: "*/15 * * * *"        # every 15 minutes
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: cve-scan
+            image: diordon/finalcicd:latest
+            imagePullPolicy: IfNotPresent
+            # Run one scan and exit (good for CronJob)
+            command: ["python","-c","from app import db; db.init(); from app.schedule_job import run_once; run_once()"]
+            env:
+            - name: DB_PATH
+              value: /data/cvewatch.db
+            - name: WEBEX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cve-secrets
+                  key: WEBEX_TOKEN
+            - name: WEBEX_ROOM_ID
+              valueFrom:
+                secretKeyRef:
+                  name: cve-secrets
+                  key: WEBEX_ROOM_ID
+            - name: CVE_API_BASE
+              valueFrom:
+                configMapKeyRef:
+                  name: cve-config
+                  key: CVE_API_BASE
+            - name: POLL_MINUTES
+              valueFrom:
+                configMapKeyRef:
+                  name: cve-config
+                  key: POLL_MINUTES
+            volumeMounts:
+            - name: cve-db
+              mountPath: /data
+          volumes:
+          - name: cve-db
+            persistentVolumeClaim:
+              claimName: cve-db-pvc
+

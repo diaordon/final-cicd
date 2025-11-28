@@ -1,19 +1,31 @@
-Paste (replace YOUR_DOCKERHUB_USER):
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: hello-deploy
+  name: cve-deploy
 spec:
   replicas: 1
   selector:
-    matchLabels: { app: hello }
+    matchLabels:
+      app: cve
   template:
     metadata:
-      labels: { app: hello }
+      labels:
+        app: cve
     spec:
       containers:
-      - name: hello
-        image: diaordon/finalcicd:latest
-        imagePullPolicy: Always
+      - name: cve-api
+        image: diordon/finalcicd:latest
+        imagePullPolicy: IfNotPresent
         ports:
-        - containerPort: 8080
+        - containerPort: 8000
+        env:
+        - name: DB_PATH
+          value: /data/cvewatch.db
+        volumeMounts:
+        - name: cve-db
+          mountPath: /data
+      volumes:
+      - name: cve-db
+        persistentVolumeClaim:
+          claimName: cve-db-pvc
+
