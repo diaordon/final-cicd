@@ -59,22 +59,22 @@ PY
     }
 
     stage('Deploy local (Docker)'){
-      steps {
-        withCredentials([string(credentialsId: 'webex_token', variable: 'WXT'),
-                         string(credentialsId: 'webex_room',  variable: 'WXR')]) {
-          sh '''
-            IMG=$(cat image.txt)
-            docker rm -f cvewatch || true
-            docker run -d --name cvewatch -p 18080:8000 \
-              -e WEBEX_TOKEN="$WXT" -e WEBEX_ROOM_ID="$WXR" \
-              -e CVE_API_BASE="https://services.nvd.nist.gov/rest/json/cves/2.0" \
-              -v "$PWD/cvewatch.db:/app/cvewatch.db" "$IMG"
-          '''
-        }
-      }
+  steps {
+    withCredentials([string(credentialsId: 'webex_token', variable: 'WXT'),
+                     string(credentialsId: 'webex_room',  variable: 'WXR')]) {
+      sh '''
+        set -euxo pipefail
+        IMG=$(cat image.txt)
+        docker rm -f cvewatch || true
+        docker run -d --name cvewatch -p 18080:8000 \
+          -e WEBEX_TOKEN="$WXT" -e WEBEX_ROOM_ID="$WXR" \
+          -e CVE_API_BASE="https://services.nvd.nist.gov/rest/json/cves/2.0" \
+          -v "$PWD/cvewatch.db:/app/cvewatch.db" "$IMG"
+      '''
     }
-
-    stage('Trigger scan'){
+  }
+}
+stage('Trigger scan'){
   steps {
     sh '''
       set -euxo pipefail
@@ -110,4 +110,4 @@ stage('Notify Webex'){
     }
   }
 }
-    
+
