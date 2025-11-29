@@ -56,7 +56,6 @@ stage('Deploy local (Docker)') {
         docker volume create cvewatch-data || true
         docker rm -f cvewatch || true
 
-        # read the full image reference; fall back to latest
         IMG="$(cat image.txt 2>/dev/null || echo "${IMAGE_REPO}:latest")"
 
         docker run -d --name cvewatch --restart unless-stopped \
@@ -68,12 +67,16 @@ stage('Deploy local (Docker)') {
           -v cvewatch-data:/data \
           "$IMG"
 
-        # readiness check
-        for i in $(seq 1 25); do
-          curl -sf http://127.0.0.1:18080/ >/dev/null && { echo up; break; }
+        # Wait for the app to announce readiness in its logs
+        for i in $(seq 1 30); do
+          docker logs cvewatch 2>&1 | grep -q "Application startup complete" && break
           sleep 1
-          [ $i -eq 25 ] && { docker logs --tail 100 cvewatch; exit 1; }
+          [ $i -eq 30 ] && { echo "App did not start in time"; docker logs --tail 200 cvewatch; exit 1; }
         done
+
+        # Optional: HTTP check via the CONTAINER IP (not 127.0.0.1)
+        CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' cvewatch)
+        curl -sf "http://${CIP}:8000/" >/dev/null
       '''
     }
   }
