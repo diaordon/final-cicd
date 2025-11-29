@@ -44,22 +44,20 @@ pipeline {
       }
     }
 
-    stage('Deploy local (Docker)') {
+stage('Deploy local (Docker)') {
   steps {
-    // See where we are & what files exist (helps debugging)
-    sh 'pwd && ls -la'
-
     withCredentials([
       string(credentialsId: 'webex_token', variable: 'WX_TOKEN'),
       string(credentialsId: 'webex_room',  variable: 'WX_ROOM')
     ]) {
       sh '''
         set -euxo pipefail
+
         docker volume create cvewatch-data || true
         docker rm -f cvewatch || true
 
-        # IMPORTANT: use your correct repo name here if it's "diaordon" not "diordon"
-        IMG="${IMAGE_REPO}:${TAG}"
+        # read the full image reference; fall back to latest
+        IMG="$(cat image.txt 2>/dev/null || echo "${IMAGE_REPO}:latest")"
 
         docker run -d --name cvewatch --restart unless-stopped \
           -p 18080:8000 \
@@ -70,18 +68,11 @@ pipeline {
           -v cvewatch-data:/data \
           "$IMG"
 
-        # wait for readiness
+        # readiness check
         for i in $(seq 1 25); do
-          if curl -sf http://127.0.0.1:18080/ > /dev/null; then
-            echo "cvewatch is up"
-            break
-          fi
+          curl -sf http://127.0.0.1:18080/ >/dev/null && { echo up; break; }
           sleep 1
-          if [ $i -eq 25 ]; then
-            echo "cvewatch not ready"
-            docker logs --tail 120 cvewatch
-            exit 1
-          fi
+          [ $i -eq 25 ] && { docker logs --tail 100 cvewatch; exit 1; }
         done
       '''
     }
