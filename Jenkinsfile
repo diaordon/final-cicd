@@ -23,29 +23,6 @@ pipeline {
       }
     }
 
-withCredentials([
-  string(credentialsId: 'webex_token', variable: 'WX_TOKEN'),
-  string(credentialsId: 'webex_room',  variable: 'WX_ROOM')
-]) {
-  sh '''
-    cat > .env <<EOF
-WEBEX_TOKEN=${WX_TOKEN}
-WEBEX_ROOM_ID=${WX_ROOM}
-CVE_API_BASE=https://services.nvd.nist.gov/rest/json/cves/2.0
-PORT=8000
-DB_PATH=/data/cvewatch.db
-EOF
-  '''
-  sh '''
-    docker volume create cvewatch-data || true
-    docker rm -f cvewatch || true
-    docker run -d --name cvewatch --restart unless-stopped \
-      -p 18080:8000 \
-      --env-file .env \
-      -v cvewatch-data:/data \
-      ${IMAGE_REPO}:${TAG}
-  '''
-}
     stage('Docker Login') {
       steps {
         withCredentials([string(credentialsId: 'dockerhub-token', variable: 'DOCKERHUB_TOKEN')]) {
@@ -68,33 +45,48 @@ EOF
     }
 
     stage('Deploy local (Docker)') {
-      steps {
-        sh '''
-          set -euxo pipefail
-          IMG=$(cat image.txt || echo $IMAGE_REPO:latest)
+  steps {
+    // See where we are & what files exist (helps debugging)
+    sh 'pwd && ls -la'
 
-          docker rm -f cvewatch || true
-          docker volume create cvewatch-data || true
+    withCredentials([
+      string(credentialsId: 'webex_token', variable: 'WX_TOKEN'),
+      string(credentialsId: 'webex_room',  variable: 'WX_ROOM')
+    ]) {
+      sh '''
+        set -euxo pipefail
+        docker volume create cvewatch-data || true
+        docker rm -f cvewatch || true
 
-          docker run -d --name cvewatch --restart unless-stopped \
-            -p 18080:8000 \
-            --env-file .env \
-            -e DB_PATH=/data/cvewatch.db \
-            -v cvewatch-data:/data \
-            "$IMG"
+        # IMPORTANT: use your correct repo name here if it's "diaordon" not "diordon"
+        IMG="${IMAGE_REPO}:${TAG}"
 
-          # wait for app to be ready
-          for i in $(seq 1 30); do
-            if docker logs cvewatch 2>&1 | grep -q "Application startup complete"; then
-              break
-            fi
-            sleep 1
-          done
+        docker run -d --name cvewatch --restart unless-stopped \
+          -p 18080:8000 \
+          -e WEBEX_TOKEN="$WX_TOKEN" \
+          -e WEBEX_ROOM_ID="$WX_ROOM" \
+          -e CVE_API_BASE="https://services.nvd.nist.gov/rest/json/cves/2.0" \
+          -e DB_PATH="/data/cvewatch.db" \
+          -v cvewatch-data:/data \
+          "$IMG"
 
-          docker logs --tail 60 cvewatch
-        '''
-      }
+        # wait for readiness
+        for i in $(seq 1 25); do
+          if curl -sf http://127.0.0.1:18080/ > /dev/null; then
+            echo "cvewatch is up"
+            break
+          fi
+          sleep 1
+          if [ $i -eq 25 ]; then
+            echo "cvewatch not ready"
+            docker logs --tail 120 cvewatch
+            exit 1
+          fi
+        done
+      '''
     }
+  }
+}
 
     stage('Trigger scan') {
       steps {
