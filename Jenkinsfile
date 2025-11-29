@@ -1,33 +1,28 @@
 pipeline {
   agent any
   environment {
-    IMAGE_REPO = 'diordon/finalcicd'   // <-- change if your Docker Hub repo name differs
+    IMAGE_REPO = 'diordon/finalcicd'     // <- change if your Docker Hub repo is different
   }
   stages {
-
     stage('Checkout'){
-      steps {
-        checkout scm
-        sh 'git log -1 --oneline || true'
-        sh 'ls -al'
-      }
+      steps { checkout scm }
     }
 
+    // Small sanity check so we see the repo contents in the log
+    stage('Show workspace'){
+      steps { sh 'pwd && ls -al' }
+    }
+
+    // Run tests in a clean Python container (avoids PEP 668 issues)
     stage('Unit tests'){
       steps {
         sh '''
-          set -euxo pipefail
-          # make sure venv is available in the Jenkins container
-          if ! python3 -m venv --help >/dev/null 2>&1; then
-            apt-get update && apt-get install -y python3-venv
-          fi
-
-          python3 -m venv .venv
-          . .venv/bin/activate
-          python -V
-          pip install --upgrade pip
-          pip install -r requirements.txt pytest
-          pytest -q
+          docker run --rm -v "$PWD":/work -w /work python:3.11 bash -lc "
+            python -V &&
+            pip -V &&
+            pip install -r requirements.txt pytest &&
+            pytest -q
+          "
         '''
       }
     }
@@ -45,7 +40,6 @@ pipeline {
     stage('Build & Push image'){
       steps {
         sh '''
-          set -euxo pipefail
           TAG=$(date +%Y.%m.%d-%H%M)
           docker build -t $IMAGE_REPO:$TAG -t $IMAGE_REPO:latest .
           docker push $IMAGE_REPO:$TAG
@@ -60,14 +54,12 @@ pipeline {
         withCredentials([string(credentialsId: 'webex_token', variable: 'WXT'),
                          string(credentialsId: 'webex_room',  variable: 'WXR')]) {
           sh '''
-            set -euxo pipefail
             IMG=$(cat image.txt)
             docker rm -f cvewatch || true
-            # Note: no bind mount of cvewatch.db to avoid host/volume path issues
             docker run -d --name cvewatch -p 18080:8000 \
               -e WEBEX_TOKEN="$WXT" -e WEBEX_ROOM_ID="$WXR" \
               -e CVE_API_BASE="https://services.nvd.nist.gov/rest/json/cves/2.0" \
-              "$IMG"
+              -v "$PWD/cvewatch.db:/app/cvewatch.db" "$IMG"
           '''
         }
       }
@@ -88,4 +80,3 @@ pipeline {
     }
   }
 }
-
