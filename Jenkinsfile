@@ -1,18 +1,20 @@
 pipeline {
   agent any
   environment {
-    IMAGE_REPO = 'diordon/finalcicd'   // <— change if your repo name differs
+    IMAGE_REPO = 'diordon/finalcicd'   // change if your Docker Hub repo name differs
   }
   stages {
     stage('Checkout'){ steps { checkout scm } }
 
+    // Run tests inside a throwaway Python container
     stage('Unit tests'){
       steps {
         sh '''
-          python3 -m venv .venv && . .venv/bin/activate
-          pip install -r requirements.txt pytest >/dev/null
-          echo "def test_dummy(): assert True" > tests/test_dummy.py
-          pytest -q
+          docker run --rm -v "$PWD":/work -w /work python:3.11 bash -lc '
+            python -V && pip -V &&
+            pip install -r requirements.txt pytest &&
+            pytest -q
+          '
         '''
       }
     }
@@ -45,7 +47,6 @@ pipeline {
                          string(credentialsId: 'webex_room',  variable: 'WXR')]) {
           sh '''
             IMG=$(cat image.txt)
-            # free the port if a previous container is running
             docker rm -f cvewatch || true
             docker run -d --name cvewatch -p 18080:8000 \
               -e WEBEX_TOKEN="$WXT" -e WEBEX_ROOM_ID="$WXR" \
@@ -56,14 +57,16 @@ pipeline {
       }
     }
 
+    // Post to Webex using a tiny curl container (so Jenkins doesn't need curl)
     stage('Notify Webex'){
       steps {
         withCredentials([string(credentialsId: 'webex_token', variable: 'WXT'),
                          string(credentialsId: 'webex_room',  variable: 'WXR')]) {
           sh '''
             IMG=$(cat image.txt)
-            curl -sS -X POST "https://webexapis.com/v1/messages" \
-              -H "Authorization: Bearer $WXT" -H "Content-Type: application/json" \
+            docker run --rm curlimages/curl:8.9.1 -sS -X POST https://webexapis.com/v1/messages \
+              -H "Authorization: Bearer $WXT" \
+              -H "Content-Type: application/json" \
               -d '{"roomId":"'"$WXR"'","markdown":"✅ Deploy complete: **'"$IMG"'**"}' >/dev/null
           '''
         }
