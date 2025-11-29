@@ -65,8 +65,8 @@ pipeline {
     stage('Deploy local (Docker)') {
       steps {
         withCredentials([
-          string(credentialsId: 'webex-token', variable: 'WX_TOKEN'),
-          string(credentialsId: 'webex-room',  variable: 'WX_ROOM')
+          string(credentialsId: 'webex_token', variable: 'WX_TOKEN'),
+          string(credentialsId: 'webex_room',  variable: 'WX_ROOM')
         ]) {
           sh '''
             set -euxo pipefail
