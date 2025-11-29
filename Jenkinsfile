@@ -1,7 +1,7 @@
 pipeline {
   agent any
   environment {
-    IMAGE_REPO = 'diordon/finalcicd'     // <- change if your Docker Hub repo is different
+    IMAGE_REPO = 'diaordon/finalcicd'     // <- change if your Docker Hub repo is different
   }
   stages {
     stage('Checkout'){
