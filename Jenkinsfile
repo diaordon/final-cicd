@@ -39,84 +39,115 @@ pipeline {
     }
 
     stage('Build & Push image') {
-      steps {
-        sh '''
-          TAG=$(date +%Y.%m.%d-%H%M)
-          docker build -t $IMAGE_REPO:$TAG -t $IMAGE_REPO:latest .
-          docker push $IMAGE_REPO:$TAG
-          docker push $IMAGE_REPO:latest
-          echo $IMAGE_REPO:$TAG > image.txt
-        '''
-      }
-    }
-
-    stage('Deploy local (Docker)'){
-  steps {
-    withCredentials([
-      string(credentialsId: 'webex_token', variable: 'WXT'),
-      string(credentialsId: 'webex_room',  variable: 'WXR')
-    ]) {
-      sh '''
-        set -euxo pipefail
-        # Clean previous container if any
-        docker rm -f cvewatch || true
-
-        # Ensure the bind-mounted DB is a real file (not a directory)
-        install -Dm666 /dev/null cvewatch.db
-        ls -l cvewatch.db
-
-        IMG=$(cat image.txt)
-
-        docker run -d --name cvewatch -p 18080:8000 \
-          -e WEBEX_TOKEN="$WXT" -e WEBEX_ROOM_ID="$WXR" \
-          -e DB_PATH="/app/cvewatch.db" \
-          -v "$PWD/cvewatch.db:/app/cvewatch.db" "$IMG"
-
-        # Wait for the app to be ready (max ~20s)
-        for i in {1..20}; do
-          curl -sf http://127.0.0.1:18080/ >/dev/null && break || sleep 1
-        done
-
-        # Show last lines of logs for quick debugging
-        docker logs --tail 60 cvewatch || true
-      '''
-    }
-  }
-}
-
-stage('Trigger scan'){
   steps {
     sh '''
       set -euxo pipefail
-      # create a watch and run one scan cycle
-      curl -sS -X POST "http://127.0.0.1:18080/watch?q=OpenSSL" || true
-      docker exec cvewatch python -c "from app.schedule_job import run_once; run_once()"
+      TAG=$(date +%Y.%m.%d-%H%M)
+      docker build -t diaordon/finalcicd:$TAG -t diaordon/finalcicd:latest .
+      echo diaordon/finalcicd:$TAG > image.txt
+      docker push diaordon/finalcicd:$TAG
+      docker push diaordon/finalcicd:latest
     '''
   }
 }
 
-    stage('Notify Webex') {
-      steps {
-        withCredentials([string(credentialsId: 'webex_token', variable: 'WXT'),
-                         string(credentialsId: 'webex_room',  variable: 'WXR')]) {
-          sh '''
-            IMG=$(cat image.txt)
-            curl -sS -X POST "https://webexapis.com/v1/messages" \
-              -H "Authorization: Bearer $WXT" -H "Content-Type: application/json" \
-              -d '{"roomId":"'"$WXR"'","markdown":"✅ Deploy complete: **'"$IMG"'**"}' >/dev/null
-          '''
-        }
-      }
-    }
-  }
+stage('Deploy local (Docker)') {
+  steps {
+    sh '''
+      set -euxo pipefail
 
-  post {
-    always {
+      # Image to run (written by earlier stage)
+      IMG=$(cat $WORKSPACE/image.txt || echo "diaordon/finalcicd:latest")
+      echo "Using image: $IMG"
+
+      # Clean previous container, ensure persistent volume exists
+      docker rm -f cvewatch || true
+      docker volume create cvewatch-data || true
+
+      # Run app with a writable volume and the correct DB_PATH
+      docker run -d --name cvewatch --restart unless-stopped \
+        -p 18080:8000 \
+        -v cvewatch-data:/data \
+        -e DB_PATH=/data/cvewatch.db \
+        --env-file .env \
+        "$IMG"
+
+      # Wait until the app is really up
+      for i in $(seq 1 30); do
+        sleep 1
+        if docker logs cvewatch | grep -q "Application startup complete"; then
+          break
+        fi
+      done
+      docker logs --tail 80 cvewatch
+
+      # Sanity-check inside the container (helps catch path/mount issues quickly)
+      docker exec cvewatch sh -lc 'echo DB_PATH=$DB_PATH; ls -ld /data; ls -l /data || true; python - <<PY
+import os,sqlite3,sys
+p=os.environ.get("DB_PATH","(missing)")
+print("DB_PATH in container:", p)
+# Try to open the DB path directory and touch the file
+d=os.path.dirname(p) or "."
+print("Writable?", os.access(d, os.W_OK))
+# Create the DB if not present
+con=sqlite3.connect(p)
+con.execute("create table if not exists sanity(k text primary key, v text)")
+con.commit(); con.close()
+print("SQLite touch OK")
+PY'
+    '''
+  }
+}
+
+stage('Trigger scan') {
+  steps {
+    sh '''
+      set -euxo pipefail
+
+      # (Idempotent) ensure the topic is being watched
+      curl -sS -X POST "http://127.0.0.1:18080/watch?q=OpenSSL" || true
+
+      # Kick the job that posts to Webex
+      docker exec cvewatch python - <<'PY'
+from app.schedule_job import run_once
+run_once()
+print("scan+notify sent")
+PY
+    '''
+  }
+}
+
+stage('Notify Webex') {
+  steps {
+    withCredentials([
+      string(credentialsId: 'webex-token', variable: 'WEBEX_TOKEN'),
+      string(credentialsId: 'webex-room-id', variable: 'WEBEX_ROOM_ID')
+    ]) {
       sh '''
-        set +e
-        docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}"
-        docker logs --tail 80 cvewatch || true
+        set -euxo pipefail
+        python3 - <<'PY'
+import os, requests
+r = requests.post(
+  "https://webexapis.com/v1/messages",
+  headers={"Authorization": f"Bearer {os.environ['WEBEX_TOKEN']}"},
+  json={"roomId": os.environ['WEBEX_ROOM_ID'], "markdown": "✅ Deploy complete and scan triggered."},
+  timeout=20)
+print(r.status_code, r.text[:180])
+PY
       '''
     }
   }
 }
+
+post {
+  always {
+    sh '''
+      set +e
+      echo "---- docker ps ----"
+      docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}'
+      echo "---- last 80 lines of cvewatch ----"
+      docker logs --tail 80 cvewatch || true
+    '''
+  }
+}
+
