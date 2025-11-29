@@ -50,30 +50,50 @@ pipeline {
       }
     }
 
-    stage('Deploy local (Docker)') {
-      steps {
-        withCredentials([string(credentialsId: 'webex_token', variable: 'WXT'),
-                         string(credentialsId: 'webex_room',  variable: 'WXR')]) {
-          sh '''
-            IMG=$(cat image.txt)
-            docker rm -f cvewatch || true
-            docker run -d --name cvewatch -p 18080:8000 \
-              -e WEBEX_TOKEN="$WXT" -e WEBEX_ROOM_ID="$WXR" \
-              -e CVE_API_BASE="https://services.nvd.nist.gov/rest/json/cves/2.0" \
-              -v "$WORKSPACE/cvewatch.db:/app/cvewatch.db" "$IMG"
-          '''
-        }
-      }
-    }
+    stage('Deploy local (Docker)'){
+  steps {
+    withCredentials([
+      string(credentialsId: 'webex_token', variable: 'WXT'),
+      string(credentialsId: 'webex_room',  variable: 'WXR')
+    ]) {
+      sh '''
+        set -euxo pipefail
+        # Clean previous container if any
+        docker rm -f cvewatch || true
 
-    stage('Trigger scan') {
-      steps {
-        sh '''
-          curl -sS -X POST "http://127.0.0.1:18080/watch?q=OpenSSL" >/dev/null || true
-          docker exec cvewatch python -c "from app.schedule_job import run_once; run_once()"
-        '''
-      }
+        # Ensure the bind-mounted DB is a real file (not a directory)
+        install -Dm666 /dev/null cvewatch.db
+        ls -l cvewatch.db
+
+        IMG=$(cat image.txt)
+
+        docker run -d --name cvewatch -p 18080:8000 \
+          -e WEBEX_TOKEN="$WXT" -e WEBEX_ROOM_ID="$WXR" \
+          -e DB_PATH="/app/cvewatch.db" \
+          -v "$PWD/cvewatch.db:/app/cvewatch.db" "$IMG"
+
+        # Wait for the app to be ready (max ~20s)
+        for i in {1..20}; do
+          curl -sf http://127.0.0.1:18080/ >/dev/null && break || sleep 1
+        done
+
+        # Show last lines of logs for quick debugging
+        docker logs --tail 60 cvewatch || true
+      '''
     }
+  }
+}
+
+stage('Trigger scan'){
+  steps {
+    sh '''
+      set -euxo pipefail
+      # create a watch and run one scan cycle
+      curl -sS -X POST "http://127.0.0.1:18080/watch?q=OpenSSL" || true
+      docker exec cvewatch python -c "from app.schedule_job import run_once; run_once()"
+    '''
+  }
+}
 
     stage('Notify Webex') {
       steps {
