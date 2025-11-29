@@ -15,17 +15,20 @@ pipeline {
 
     // Run tests in a clean Python container (avoids PEP 668 issues)
     stage('Unit tests'){
-      steps {
-        sh '''
-          docker run --rm -v "$PWD":/work -w /work python:3.11 bash -lc "
-            python -V &&
-            pip -V &&
-            pip install -r requirements.txt pytest &&
-            pytest -q
-          "
-        '''
-      }
-    }
+  steps {
+    sh '''
+      docker run --rm \
+        --volumes-from jenkins \
+        -w "$WORKSPACE" \
+        python:3.11 bash -lc "
+          ls -al
+          python -V && pip -V
+          pip install -r requirements.txt pytest
+          pytest -q
+        "
+    '''
+  }
+}
 
     stage('Docker Login'){
       steps {
