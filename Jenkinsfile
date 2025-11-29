@@ -1,25 +1,14 @@
 pipeline {
   agent any
-
-  options {
-    skipDefaultCheckout(true)
-    timestamps()
-  }
+  options { timestamps() }
 
   environment {
-    IMAGE_REPO   = 'diaordon/finalcicd'
     APP_PORT     = '8000'
-    HOST_PORT    = '18080'
-    DB_VOL       = 'cvewatch-data'
-    DB_PATH      = '/data/cvewatch.db'
     CVE_API_BASE = 'https://services.nvd.nist.gov/rest/json/cves/2.0'
+    DB_VOL       = 'cvewatch-data'
   }
 
   stages {
-    stage('Checkout') {
-      steps { checkout scm }
-    }
-
     stage('Unit tests') {
       steps {
         sh '''
@@ -31,7 +20,8 @@ pipeline {
             else
               pip install -q fastapi requests "uvicorn[standard]" pytest
             fi
-            mkdir -p tests; echo "def test_dummy(): assert True" > tests/test_dummy.py
+            mkdir -p tests
+            echo "def test_dummy(): assert True" > tests/test_dummy.py
             pytest -q
           '
         '''
@@ -39,25 +29,24 @@ pipeline {
     }
 
     stage('Docker Login') {
-  steps {
-    withCredentials([string(credentialsId: 'dockerhub-token', variable: 'DOCKERHUB_TOKEN')]) {
-      sh '''
-        # login with token as password; username is your Docker Hub handle
-        echo "$DOCKERHUB_TOKEN" | docker login -u diaordon --password-stdin
-      '''
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub-token',
+                                          usernameVariable: 'DOCKERHUB_USER',
+                                          passwordVariable: 'DOCKERHUB_PASS')]) {
+          sh 'echo "$DOCKERHUB_PASS" | docker login -u "$DOCKERHUB_USER" --password-stdin'
+        }
+      }
     }
-  }
-}
 
     stage('Build & Push image') {
       steps {
         sh '''
           set -eux
           TAG=$(date +%Y.%m.%d-%H%M)
-          docker build -t ${IMAGE_REPO}:${TAG} -t ${IMAGE_REPO}:latest .
-          echo ${IMAGE_REPO}:${TAG} > image.txt
-          docker push ${IMAGE_REPO}:${TAG}
-          docker push ${IMAGE_REPO}:latest
+          docker build -t diaordon/finalcicd:${TAG} -t diaordon/finalcicd:latest .
+          echo diaordon/finalcicd:${TAG} > image.txt
+          docker push diaordon/finalcicd:${TAG}
+          docker push diaordon/finalcicd:latest
         '''
       }
     }
@@ -70,33 +59,43 @@ pipeline {
         ]) {
           sh '''
             set -euxo pipefail
-
-            docker volume create ${DB_VOL} >/dev/null
-            docker rm -f cvewatch >/dev/null 2>&1 || true
-
-            IMG=$(cat image.txt || echo ${IMAGE_REPO}:latest)
+            docker volume create ${DB_VOL} || true
+            docker rm -f cvewatch || true
+            IMG=$(cat image.txt)
 
             docker run -d --name cvewatch --restart unless-stopped \
-              -p ${HOST_PORT}:${APP_PORT} \
+              -p 18080:${APP_PORT} \
               -e WEBEX_TOKEN="${WX_TOKEN}" \
               -e WEBEX_ROOM_ID="${WX_ROOM}" \
               -e CVE_API_BASE="${CVE_API_BASE}" \
-              -e DB_PATH="${DB_PATH}" \
+              -e DB_PATH=/data/cvewatch.db \
               -v ${DB_VOL}:/data \
-              "$IMG"
+              "${IMG}"
 
-            # Readiness loop: break on success (max ~25s)
-            for i in $(seq 1 25); do
-              if curl -sf http://127.0.0.1:${HOST_PORT}/ >/dev/null; then
-                echo "ready"; break
+            # Readiness check **inside** the container (no curl required)
+            ok=no
+            for i in $(seq 1 30); do
+              if docker exec cvewatch python - <<'PY'
+import sys, urllib.request
+try:
+    with urllib.request.urlopen("http://127.0.0.1:8000/", timeout=2) as r:
+        sys.exit(0 if r.status==200 else 1)
+except Exception:
+    sys.exit(1)
+PY
+              then
+                echo "READY after ${i}s"
+                ok=yes
+                break
               fi
               sleep 1
-              if [ "$i" -eq 25 ]; then
-                echo "App did not become ready"
-                docker logs --tail 200 cvewatch || true
-                exit 1
-              fi
             done
+
+            if [ "$ok" != "yes" ]; then
+              echo "App did not become ready (inside check). Logs:"
+              docker logs --tail 200 cvewatch
+              exit 1
+            fi
           '''
         }
       }
@@ -108,9 +107,30 @@ pipeline {
           docker exec cvewatch python - <<'PY'
 from app.schedule_job import run_once
 run_once()
-print("scan+notify executed from Jenkins")
+print("scan triggered")
 PY
         '''
+      }
+    }
+
+    stage('Notify Webex') {
+      steps {
+        withCredentials([
+          string(credentialsId: 'webex_token', variable: 'WX_TOKEN'),
+          string(credentialsId: 'webex_room',  variable: 'WX_ROOM')
+        ]) {
+          sh '''
+            docker exec cvewatch python - <<'PY'
+import os, requests
+t=os.environ['WEBEX_TOKEN']; rid=os.environ['WEBEX_ROOM_ID']
+requests.post("https://webexapis.com/v1/messages",
+              headers={"Authorization": f"Bearer {t}"},
+              json={"roomId": rid, "markdown": "✅ Build deployed and scan triggered."},
+              timeout=20).raise_for_status()
+print("webex ping sent")
+PY
+          '''
+        }
       }
     }
   }
