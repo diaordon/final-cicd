@@ -46,40 +46,38 @@ pipeline {
 
 stage('Deploy local (Docker)') {
   steps {
-    withCredentials([
-      string(credentialsId: 'webex_token', variable: 'WX_TOKEN'),
-      string(credentialsId: 'webex_room',  variable: 'WX_ROOM')
-    ]) {
-      sh '''
-        set -euxo pipefail
+withCredentials([
+  string(credentialsId: 'webex-token', variable: 'WX_TOKEN'),
+  string(credentialsId: 'webex-room',  variable: 'WX_ROOM')
+]) {
+  sh """
+    docker volume create cvewatch-data || true
+    docker rm -f cvewatch || true
+    IMG=$(cat image.txt || echo "${IMAGE_REPO}:${TAG}")
 
-        docker volume create cvewatch-data || true
-        docker rm -f cvewatch || true
+    docker run -d --name cvewatch --restart unless-stopped \
+      -p 18080:8000 \
+      -e WEBEX_TOKEN=${WX_TOKEN} \
+      -e WEBEX_ROOM_ID=${WX_ROOM} \
+      -e CVE_API_BASE="https://services.nvd.nist.gov/rest/json/cves/2.0" \
+      -e DB_PATH=/data/cvewatch.db \
+      -v cvewatch-data:/data \
+      "$IMG"
 
-        IMG="$(cat image.txt 2>/dev/null || echo "${IMAGE_REPO}:latest")"
-
-        docker run -d --name cvewatch --restart unless-stopped \
-          -p 18080:8000 \
-          -e WEBEX_TOKEN="$WX_TOKEN" \
-          -e WEBEX_ROOM_ID="$WX_ROOM" \
-          -e CVE_API_BASE="https://services.nvd.nist.gov/rest/json/cves/2.0" \
-          -e DB_PATH="/data/cvewatch.db" \
-          -v cvewatch-data:/data \
-          "$IMG"
-
-        # Wait for the app to announce readiness in its logs
-        for i in $(seq 1 30); do
-          docker logs cvewatch 2>&1 | grep -q "Application startup complete" && break
-          sleep 1
-          [ $i -eq 30 ] && { echo "App did not start in time"; docker logs --tail 200 cvewatch; exit 1; }
-        done
-
-        # Optional: HTTP check via the CONTAINER IP (not 127.0.0.1)
-        CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' cvewatch)
-        curl -sf "http://${CIP}:8000/" >/dev/null
-      '''
-    }
-  }
+    # wait up to 25s for the app to be ready
+for i in $(seq 1 25); do
+  if curl -sf http://127.0.0.1:18080/ >/dev/null; then
+    echo "ready"
+    break
+  fi
+  sleep 1
+  if [ "$i" -eq 25 ]; then
+    docker logs --tail 100 cvewatch
+    exit 1
+  fi
+done
+  """
+}
 }
 
     stage('Trigger scan') {
