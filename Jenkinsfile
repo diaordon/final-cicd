@@ -20,12 +20,18 @@ pipeline {
       docker run --rm \
         --volumes-from jenkins \
         -w "$WORKSPACE" \
-        python:3.11 bash -lc "
+        python:3.11 bash -lc '
+          set -e
           ls -al
+          mkdir -p tests
+          cat > tests/test_dummy.py <<PY
+def test_dummy():
+    assert True
+PY
           python -V && pip -V
           pip install -r requirements.txt pytest
           pytest -q
-        "
+        '
     '''
   }
 }
