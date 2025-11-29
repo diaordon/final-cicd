@@ -23,6 +23,29 @@ pipeline {
       }
     }
 
+withCredentials([
+  string(credentialsId: 'webex_token', variable: 'WX_TOKEN'),
+  string(credentialsId: 'webex_room',  variable: 'WX_ROOM')
+]) {
+  sh '''
+    cat > .env <<EOF
+WEBEX_TOKEN=${WX_TOKEN}
+WEBEX_ROOM_ID=${WX_ROOM}
+CVE_API_BASE=https://services.nvd.nist.gov/rest/json/cves/2.0
+PORT=8000
+DB_PATH=/data/cvewatch.db
+EOF
+  '''
+  sh '''
+    docker volume create cvewatch-data || true
+    docker rm -f cvewatch || true
+    docker run -d --name cvewatch --restart unless-stopped \
+      -p 18080:8000 \
+      --env-file .env \
+      -v cvewatch-data:/data \
+      ${IMAGE_REPO}:${TAG}
+  '''
+}
     stage('Docker Login') {
       steps {
         withCredentials([string(credentialsId: 'dockerhub-token', variable: 'DOCKERHUB_TOKEN')]) {
