@@ -39,18 +39,15 @@ pipeline {
     }
 
     stage('Docker Login') {
-      steps {
-        withCredentials([
-          usernamePassword(credentialsId: 'dockerhub-token',
-                           usernameVariable: 'DOCKERHUB_USER',
-                           passwordVariable: 'DOCKERHUB_PASS')
-        ]) {
-          sh '''
-            echo "$DOCKERHUB_PASS" | docker login -u "$DOCKERHUB_USER" --password-stdin
-          '''
-        }
-      }
+  steps {
+    withCredentials([string(credentialsId: 'dockerhub-token', variable: 'DOCKERHUB_TOKEN')]) {
+      sh '''
+        # login with token as password; username is your Docker Hub handle
+        echo "$DOCKERHUB_TOKEN" | docker login -u diaordon --password-stdin
+      '''
     }
+  }
+}
 
     stage('Build & Push image') {
       steps {
