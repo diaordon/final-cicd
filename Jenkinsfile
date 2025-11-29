@@ -74,45 +74,40 @@ PY
       }
     }
 
-        stage('Trigger scan'){
-      steps {
-        sh '''
-          # Make sure the watch exists (idempotent)
-          curl -s -X POST "http://127.0.0.1:18080/watch?q=OpenSSL" >/dev/null || true
+    stage('Trigger scan'){
+  steps {
+    sh '''
+      set -euxo pipefail
 
-          # OPTIONAL (demo): clear dedupe so an alert always fires
-          cat <<'PY' | docker exec -i cvewatch python -
-import sqlite3
-try:
-  con = sqlite3.connect('/app/cvewatch.db')
-  con.execute("DELETE FROM seen WHERE product='OpenSSL'")
-  con.commit()
-finally:
-  con.close()
-PY
+      # Confirm the app is up (wait up to ~20s)
+      for i in $(seq 1 20); do
+        if curl -sSf http://127.0.0.1:18080/ > /dev/null; then
+          break
+        fi
+        sleep 1
+      done
 
-          # Run one scan from inside the container
-          cat <<'PY' | docker exec -i cvewatch python -
-from app.schedule_job import run_once
-run_once()
-print("scan done")
-PY
-        '''
-      }
-    }
+      # Make sure a watch exists (idempotent)
+      curl -s -X POST "http://127.0.0.1:18080/watch?q=OpenSSL" > /dev/null || true
 
-    stage('Notify Webex'){
-      steps {
-        withCredentials([string(credentialsId: 'webex_token', variable: 'WXT'),
-                         string(credentialsId: 'webex_room',  variable: 'WXR')]) {
-          sh '''
-            IMG=$(cat image.txt)
-            curl -sS -X POST "https://webexapis.com/v1/messages" \
-              -H "Authorization: Bearer $WXT" -H "Content-Type: application/json" \
-              -d '{"roomId":"'"$WXR"'","markdown":"✅ Deploy complete: **'"$IMG"'**"}' >/dev/null
-          '''
-        }
-      }
+      # Run the job *inside* the container without here-docs
+      docker exec cvewatch python -c "from app.schedule_job import run_once; run_once()"
+    '''
+  }
+}
+
+stage('Notify Webex'){
+  steps {
+    withCredentials([string(credentialsId: 'webex_token', variable: 'WXT'),
+                     string(credentialsId: 'webex_room',  variable: 'WXR')]) {
+      sh '''
+        IMG=$(cat image.txt)
+        curl -sS -X POST "https://webexapis.com/v1/messages" \
+          -H "Authorization: Bearer $WXT" -H "Content-Type: application/json" \
+          -d '{"roomId":"'"$WXR"'","markdown":"✅ Deploy + scan complete on **'"$IMG"'**"}' \
+          > /dev/null
+      '''
     }
   }
 }
+    
