@@ -74,6 +74,33 @@ PY
       }
     }
 
+        stage('Trigger scan'){
+      steps {
+        sh '''
+          # Make sure the watch exists (idempotent)
+          curl -s -X POST "http://127.0.0.1:18080/watch?q=OpenSSL" >/dev/null || true
+
+          # OPTIONAL (demo): clear dedupe so an alert always fires
+          cat <<'PY' | docker exec -i cvewatch python -
+import sqlite3
+try:
+  con = sqlite3.connect('/app/cvewatch.db')
+  con.execute("DELETE FROM seen WHERE product='OpenSSL'")
+  con.commit()
+finally:
+  con.close()
+PY
+
+          # Run one scan from inside the container
+          cat <<'PY' | docker exec -i cvewatch python -
+from app.schedule_job import run_once
+run_once()
+print("scan done")
+PY
+        '''
+      }
+    }
+
     stage('Notify Webex'){
       steps {
         withCredentials([string(credentialsId: 'webex_token', variable: 'WXT'),
